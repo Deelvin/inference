@@ -3,6 +3,7 @@ TVM backend for MLPerf inference vision benchmark
 Developers: Alexander Peskov, Thierry Moreau, Grigori Fursin
 """
 
+
 import backend
 
 import tvm
@@ -20,13 +21,10 @@ g_graph = None
 class BackendTVM(backend.Backend):
     def __init__(self):
         super(BackendTVM, self).__init__()
-        self.arena_num = 1
-        self.arena_size = multiprocessing.cpu_count()
         self.lib = None
         self.graph = None
         self.executor_type = None
         self.max_batchsize = None
-        self.pool = None
 
     def version(self):
         return "N/A : TODO"
@@ -38,26 +36,6 @@ class BackendTVM(backend.Backend):
     def image_format(self):
         """Requested image_format. Use a more popular layout NCHW"""
         return "NCHW"
-
-    def create_omp_args(self, arena_idx):
-        idx_start = self.arena_size * arena_idx
-        cur_arena_size = min(multiprocessing.cpu_count() - idx_start, self.arena_size)
-        # idx_end = idx_start + cur_arena_size
-
-        # OMP_PLACES="{N},{N+1},{N+2},...,{N+SZ}"
-        # arena_places_str = "{" + "},{".join(str(i) for i in range(idx_start, idx_end)) + "}"
-
-        return {
-                "TVM_NUM_THREADS": str(cur_arena_size),
-                "OMP_NUM_THREADS": str(cur_arena_size),
-                # "OMP_PLACES": arena_places_str,
-                # "OMP_PROC_BIND": "true"
-        }
-
-    @staticmethod
-    def set_omp_envs(omp_args):
-        for env_arg in omp_args:
-            os.environ[env_arg[0]] = env_arg[1]
 
     def load_impl(self, model_path, inputs, outputs, max_batchsize):
 
@@ -305,37 +283,13 @@ class BackendTVM(backend.Backend):
 
         return tvm_output
 
-    @staticmethod
-    def _worker_initializer(model_path, inputs, outputs, max_batchsize, omp_envs):
-        BackendTVM.set_omp_envs(omp_envs)
-        global g_graph
-        g_graph = BackendTVM()
-        g_graph.arena_num = 1
-        g_graph.load_impl(model_path, inputs, outputs, max_batchsize)
-
-    @staticmethod
-    def _worker_handler(feed):
-        global g_graph
-        return g_graph.predict(feed)
-
     def load(self, model_path, inputs=None, outputs=None):
         """Load model and find input/outputs from the model file."""
         self.load_impl(model_path, inputs, outputs, self.max_batchsize)
-
-        if self.arena_num > 1:
-            self.pool = multiprocessing.Pool(self.arena_num,
-                                             initializer=self._worker_initializer,
-                                             initargs=(model_path, inputs, outputs, self.max_batchsize,
-                                                       self.create_omp_args(0))
-                                             )
 
         # TODO(@apeskov): do we really have to return self ??
         return self
 
     def predict(self, feed):
         """Run the prediction."""
-        if self.arena_num > 1:
-            resp = self.pool.apply_async(self._worker_handler, args=(feed,))
-            return resp.get()
-        else:
-            return self.predict_impl(feed)
+        return self.predict_impl(feed)
