@@ -48,20 +48,20 @@ SUPPORTED_DATASETS = {
         (coco.Coco, dataset.pre_process_coco_mobilenet, coco.PostProcessCoco(),
          {"image_size": [300, 300, 3]}),
     "coco-300-pt":
-        (coco.Coco, dataset.pre_process_coco_pt_mobilenet, coco.PostProcessCocoPt(False,0.3),
+        (coco.Coco, dataset.pre_process_coco_pt_mobilenet, coco.PostProcessCocoPt(False, 0.3),
          {"image_size": [300, 300, 3]}),
     "openimages-300-retinanet":
-        (openimages.OpenImages, dataset.pre_process_openimages_retinanet, openimages.PostProcessOpenImagesRetinanet(False,0.05,300,300), 
-        {"image_size": [300, 300, 3]}),
+        (openimages.OpenImages, dataset.pre_process_openimages_retinanet, openimages.PostProcessOpenImagesRetinanet(False, 0.05, 300, 300),
+         {"image_size": [300, 300, 3]}),
     "openimages-800-retinanet":
-        (openimages.OpenImages, dataset.pre_process_openimages_retinanet, openimages.PostProcessOpenImagesRetinanet(False,0.05,800,800), 
-        {"image_size": [800, 800, 3]}),
+        (openimages.OpenImages, dataset.pre_process_openimages_retinanet, openimages.PostProcessOpenImagesRetinanet(False, 0.05, 800, 800),
+         {"image_size": [800, 800, 3]}),
     "openimages-1200-retinanet":
-        (openimages.OpenImages, dataset.pre_process_openimages_retinanet, openimages.PostProcessOpenImagesRetinanet(False,0.05,1200,1200), 
-        {"image_size": [1200, 1200, 3]}),
+        (openimages.OpenImages, dataset.pre_process_openimages_retinanet, openimages.PostProcessOpenImagesRetinanet(False, 0.05, 1200, 1200),
+         {"image_size": [1200, 1200, 3]}),
     "openimages-800-retinanet-onnx":
-        (openimages.OpenImages, dataset.pre_process_openimages_retinanet, openimages.PostProcessOpenImagesRetinanet(False,0.05,800,800,False), 
-        {"image_size": [800, 800, 3]}),       
+        (openimages.OpenImages, dataset.pre_process_openimages_retinanet, openimages.PostProcessOpenImagesRetinanet(False, 0.05, 800, 800, False),
+         {"image_size": [800, 800, 3]}),
     "coco-1200":
         (coco.Coco, dataset.pre_process_coco_resnet34, coco.PostProcessCoco(),
          {"image_size": [1200, 1200, 3]}),
@@ -69,11 +69,11 @@ SUPPORTED_DATASETS = {
         (coco.Coco, dataset.pre_process_coco_resnet34, coco.PostProcessCocoOnnx(),
          {"image_size": [1200, 1200, 3]}),
     "coco-1200-pt":
-        (coco.Coco, dataset.pre_process_coco_resnet34, coco.PostProcessCocoPt(True,0.05),
-         {"image_size": [1200, 1200, 3],"use_label_map": True}),
+        (coco.Coco, dataset.pre_process_coco_resnet34, coco.PostProcessCocoPt(True, 0.05),
+         {"image_size": [1200, 1200, 3], "use_label_map": True}),
     "coco-1200-tf":
         (coco.Coco, dataset.pre_process_coco_resnet34, coco.PostProcessCocoTf(),
-         {"image_size": [1200, 1200, 3],"use_label_map": False}),
+         {"image_size": [1200, 1200, 3], "use_label_map": False}),
 }
 
 # pre-defined command line options so simplify things. They are used as defaults and can be
@@ -212,43 +212,62 @@ last_timeing = []
 def get_args():
     """Parse commandline."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", choices=SUPPORTED_DATASETS.keys(), help="dataset")
-    parser.add_argument("--dataset-path", required=True, help="path to the dataset")
+    parser.add_argument(
+        "--dataset", choices=SUPPORTED_DATASETS.keys(), help="dataset")
+    parser.add_argument("--dataset-path", required=True,
+                        help="path to the dataset")
     parser.add_argument("--dataset-list", help="path to the dataset list")
-    parser.add_argument("--data-format", choices=["NCHW", "NHWC"], help="data format")
-    parser.add_argument("--profile", choices=SUPPORTED_PROFILES.keys(), help="standard profiles")
+    parser.add_argument(
+        "--data-format", choices=["NCHW", "NHWC"], help="data format")
+    parser.add_argument(
+        "--profile", choices=SUPPORTED_PROFILES.keys(), help="standard profiles")
     parser.add_argument("--scenario", default="SingleStream",
                         help="mlperf benchmark scenario, one of " + str(list(SCENARIO_MAP.keys())))
-    parser.add_argument("--max-batchsize", type=int, help="max batch size in a single inference")
+    parser.add_argument("--max-batchsize", type=int,
+                        help="max batch size in a single inference")
     parser.add_argument("--model", required=True, help="model file")
     parser.add_argument("--output", default="output", help="test results")
     parser.add_argument("--inputs", help="model inputs")
     parser.add_argument("--outputs", help="model outputs")
     parser.add_argument("--backend", help="runtime to use")
-    parser.add_argument("--model-name", help="name of the mlperf model, ie. resnet50")
-    parser.add_argument("--threads", default=os.cpu_count(), type=int, help="threads")
+    parser.add_argument(
+        "--model-name", help="name of the mlperf model, ie. resnet50")
+    parser.add_argument("--threads", default=os.cpu_count(),
+                        type=int, help="threads")
     parser.add_argument("--qps", type=int, help="target qps")
     parser.add_argument("--cache", type=int, default=0, help="use cache")
-    parser.add_argument("--cache_dir", type=str, default=None, help="dir path for caching")
-    parser.add_argument("--preprocessed_dir", type=str, default=None, help="dir path for storing preprocessed images (overrides cache_dir)")
-    parser.add_argument("--use_preprocessed_dataset", action="store_true", help="use preprocessed dataset instead of the original")
-    parser.add_argument("--accuracy", action="store_true", help="enable accuracy pass")
-    parser.add_argument("--find-peak-performance", action="store_true", help="enable finding peak performance pass")
-    parser.add_argument("--debug", action="store_true", help="debug, turn traces on")
+    parser.add_argument("--cache_dir", type=str,
+                        default=None, help="dir path for caching")
+    parser.add_argument("--preprocessed_dir", type=str, default=None,
+                        help="dir path for storing preprocessed images (overrides cache_dir)")
+    parser.add_argument("--use_preprocessed_dataset", action="store_true",
+                        help="use preprocessed dataset instead of the original")
+    parser.add_argument("--accuracy", action="store_true",
+                        help="enable accuracy pass")
+    parser.add_argument("--find-peak-performance", action="store_true",
+                        help="enable finding peak performance pass")
+    parser.add_argument("--debug", action="store_true",
+                        help="debug, turn traces on")
 
     # file to use mlperf rules compliant parameters
-    parser.add_argument("--mlperf_conf", default="../../mlperf.conf", help="mlperf rules config")
+    parser.add_argument(
+        "--mlperf_conf", default="../../mlperf.conf", help="mlperf rules config")
     # file for user LoadGen settings such as target QPS
-    parser.add_argument("--user_conf", default="user.conf", help="user config for user LoadGen settings such as target QPS")
+    parser.add_argument("--user_conf", default="user.conf",
+                        help="user config for user LoadGen settings such as target QPS")
     # file for LoadGen audit settings
-    parser.add_argument("--audit_conf", default="audit.config", help="config for LoadGen audit settings")
+    parser.add_argument("--audit_conf", default="audit.config",
+                        help="config for LoadGen audit settings")
 
     # below will override mlperf rules compliant settings - don't use for official submission
     parser.add_argument("--time", type=int, help="time to scan in seconds")
     parser.add_argument("--count", type=int, help="dataset items to use")
-    parser.add_argument("--performance-sample-count", type=int, help="performance sample count")
-    parser.add_argument("--max-latency", type=float, help="mlperf max latency in pct tile")
-    parser.add_argument("--samples-per-query", default=8, type=int, help="mlperf multi-stream samples per query")
+    parser.add_argument("--performance-sample-count",
+                        type=int, help="performance sample count")
+    parser.add_argument("--max-latency", type=float,
+                        help="mlperf max latency in pct tile")
+    parser.add_argument("--samples-per-query", default=8,
+                        type=int, help="mlperf multi-stream samples per query")
     args = parser.parse_args()
 
     # don't use defaults in argparser. Instead we default to a dict, override that with a profile
@@ -280,8 +299,10 @@ def get_backend(backend):
         from backend_onnxruntime import BackendOnnxruntime
         backend = BackendOnnxruntime()
     elif backend == "tvm":
-        from backend_tvm import BackendTVM
-        backend = BackendTVM()
+        # from backend_tvm import BackendTVM
+        # backend = BackendTVM()
+        from backend_tvm import PoolBackendTVM
+        backend = PoolBackendTVM()
     elif backend == "null":
         from backend_null import BackendNull
         backend = BackendNull()
@@ -290,7 +311,7 @@ def get_backend(backend):
         backend = BackendPytorch()
     elif backend == "pytorch-native":
         from backend_pytorch_native import BackendPytorchNative
-        backend = BackendPytorchNative()      
+        backend = BackendPytorchNative()
     elif backend == "tflite":
         from backend_tflite import BackendTflite
         backend = BackendTflite()
@@ -335,7 +356,8 @@ class RunnerBase:
         processed_results = []
         try:
             results = self.model.predict({self.model.inputs[0]: qitem.img})
-            processed_results = self.post_process(results, qitem.content_id, qitem.label, self.result_dict)
+            processed_results = self.post_process(
+                results, qitem.content_id, qitem.label, self.result_dict)
             if self.take_accuracy:
                 self.post_process.add_results(processed_results)
             self.result_timing.append(time.time() - qitem.start)
@@ -348,7 +370,8 @@ class RunnerBase:
             response_array_refs = []
             response = []
             for idx, query_id in enumerate(qitem.query_id):
-                response_array = array.array("B", np.array(processed_results[idx], np.float32).tobytes())
+                response_array = array.array("B", np.array(
+                    processed_results[idx], np.float32).tobytes())
                 response_array_refs.append(response_array)
                 bi = response_array.buffer_info()
                 response.append(lg.QuerySampleResponse(query_id, bi[0], bi[1]))
@@ -364,7 +387,8 @@ class RunnerBase:
             bs = self.max_batchsize
             for i in range(0, len(idx), bs):
                 data, label = self.ds.get_samples(idx[i:i+bs])
-                self.run_one_item(Item(query_id[i:i+bs], idx[i:i+bs], data, label))
+                self.run_one_item(
+                    Item(query_id[i:i+bs], idx[i:i+bs], data, label))
 
     def finish(self):
         pass
@@ -378,7 +402,8 @@ class QueueRunner(RunnerBase):
         self.result_dict = {}
 
         for _ in range(self.threads):
-            worker = threading.Thread(target=self.handle_tasks, args=(self.tasks,))
+            worker = threading.Thread(
+                target=self.handle_tasks, args=(self.tasks,))
             worker.daemon = True
             self.workers.append(worker)
             worker.start()
@@ -418,7 +443,8 @@ class QueueRunner(RunnerBase):
 def add_results(final_results, name, result_dict, result_list, took, show_accuracy=False):
     percentiles = [50., 80., 90., 95., 99., 99.9]
     buckets = np.percentile(result_list, percentiles).tolist()
-    buckets_str = ",".join(["{}:{:.4f}".format(p, b) for p, b in zip(percentiles, buckets)])
+    buckets_str = ",".join(["{}:{:.4f}".format(p, b)
+                           for p, b in zip(percentiles, buckets)])
 
     if result_dict["total"] == 0:
         result_dict["total"] = len(result_list)
@@ -459,11 +485,11 @@ def main():
     # find backend
     backend = get_backend(args.backend)
 
-     # If TVM, pass max_batchsize to the backend
+    # If TVM, pass max_batchsize to the backend
     if args.backend.startswith('tvm'):
         backend.max_batchsize = args.max_batchsize
-        backend.arena_num = args.threads
-        backend.arena_size = 4
+        # backend.arena_num = args.threads
+        # backend.arena_size = 4
 
     # override image format if given
     image_format = args.data_format if args.data_format else backend.image_format()
@@ -478,7 +504,7 @@ def main():
     # dataset to use
     wanted_dataset, pre_proc, post_proc, kwargs = SUPPORTED_DATASETS[args.dataset]
     if args.use_preprocessed_dataset:
-        pre_proc=None
+        pre_proc = None
     ds = wanted_dataset(data_path=args.dataset_path,
                         image_list=args.dataset_list,
                         name=args.dataset,
@@ -536,7 +562,11 @@ def main():
         lg.TestScenario.Server: QueueRunner,
         lg.TestScenario.Offline: QueueRunner
     }
-    runner = runner_map[scenario](model, ds, args.threads, post_proc=post_proc, max_batchsize=args.max_batchsize)
+    runner = runner_map[scenario](
+        model, ds,
+        args.threads,
+        post_proc=post_proc,
+        max_batchsize=args.max_batchsize)
 
     def issue_queries(query_samples):
         runner.enqueue(query_samples)
@@ -579,11 +609,14 @@ def main():
         settings.multi_stream_samples_per_query = args.samples_per_query
     if args.max_latency:
         settings.server_target_latency_ns = int(args.max_latency * NANO_SEC)
-        settings.multi_stream_expected_latency_ns = int(args.max_latency * NANO_SEC)
+        settings.multi_stream_expected_latency_ns = int(
+            args.max_latency * NANO_SEC)
 
-    performance_sample_count = args.performance_sample_count if args.performance_sample_count else min(count, 500)
+    performance_sample_count = args.performance_sample_count if args.performance_sample_count else min(
+        count, 500)
     sut = lg.ConstructSUT(issue_queries, flush_queries)
-    qsl = lg.ConstructQSL(count, performance_sample_count, ds.load_query_samples, ds.unload_query_samples)
+    qsl = lg.ConstructQSL(count, performance_sample_count,
+                          ds.load_query_samples, ds.unload_query_samples)
 
     log.info("starting {}".format(scenario))
     result_dict = {"good": 0, "total": 0, "scenario": str(scenario)}
@@ -599,6 +632,18 @@ def main():
     add_results(final_results, "{}".format(scenario),
                 result_dict, last_timeing, time.time() - ds.last_loaded, args.accuracy)
 
+    if isinstance(model, AsyncBackendTVM):
+        # Stop sample for each worker
+        for _ in range(model.num_processes):
+            model.predict(-1)
+        model.finish()
+
+        result = model.async_response()
+
+    # PoolBackendTVM post-actions
+    if isinstance(model, PoolBackendTVM):
+        result = model.async_response(result)
+        model.finish()
     runner.finish()
     lg.DestroyQSL(qsl)
     lg.DestroySUT(sut)

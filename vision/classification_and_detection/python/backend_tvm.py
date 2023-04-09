@@ -8,334 +8,253 @@ import backend
 import tvm
 from tvm import auto_scheduler
 from tvm.contrib import graph_executor
+from tvm.runtime import vm as runtime_vm
 
 import numpy as np
 
 import os
 import multiprocessing
 
-g_graph = None
 
+class WorkerDescriptor:
+    """
+    Class that provides an API for loading and inferencing a model
+    """
+    executable: typing.Any
+    executable_type: str = "virtual_machine"
+    max_batchsize: int
 
-class BackendTVM(backend.Backend):
-    def __init__(self):
-        super(BackendTVM, self).__init__()
-        self.arena_num = 1
-        self.arena_size = multiprocessing.cpu_count()
-        self.lib = None
-        self.graph = None
-        self.executor_type = None
-        self.max_batchsize = None
-        self.pool = None
-
-    def version(self):
-        return "N/A : TODO"
-
-    def name(self):
-        """Name of the runtime."""
-        return "tvm"
-
-    def image_format(self):
-        """Requested image_format. Use a more popular layout NCHW"""
-        return "NCHW"
-
-    def create_omp_args(self, arena_idx):
-        idx_start = self.arena_size * arena_idx
-        cur_arena_size = min(multiprocessing.cpu_count() - idx_start, self.arena_size)
-        # idx_end = idx_start + cur_arena_size
-
-        # OMP_PLACES="{N},{N+1},{N+2},...,{N+SZ}"
-        # arena_places_str = "{" + "},{".join(str(i) for i in range(idx_start, idx_end)) + "}"
-
-        return {
-                "TVM_NUM_THREADS": str(cur_arena_size),
-                "OMP_NUM_THREADS": str(cur_arena_size),
-                # "OMP_PLACES": arena_places_str,
-                # "OMP_PROC_BIND": "true"
-        }
-
-    @staticmethod
-    def set_omp_envs(omp_args):
-        for env_arg in omp_args:
-            os.environ[env_arg[0]] = env_arg[1]
-
-    def load_impl(self, model_path, inputs, outputs, max_batchsize):
-
-        # Check inputs and outputs
-        # Normally should be specified by MLPerf, by the command line
-        # By default taken from CK packages meta to ensure reproducibility and extensibility
-        x = os.environ.get('ML_MODEL_INPUT_LAYERS','').strip()
-        if x != '':
-           inputs = x.split(',')
-
-        x = os.environ.get('ML_MODEL_OUTPUT_LAYERS','').strip()
-        if x != '':
-           outputs = x.split(',')
-
+    def init_executable(self,
+                        model_path: typing.Any,
+                        max_batchsize: int,
+                        inputs: typing.Any = None,
+                        outputs: typing.Any = None) -> typing.Any:
+        """
+        Load of the model in the format of the VirtualMachine / GraphExecutor
+        """
         self.inputs = inputs
         self.outputs = outputs
 
-        self.output_order=None
-        tmp=os.environ.get('MLPERF_TVM_OUTPUT_ORDER','')
-        if tmp!='':
-            import json
-            self.output_order=json.loads('['+tmp+']')
-
-        # Detect working/tmp directory to store and retreive compiled models
-        work_dir = os.environ.get('MLPERF_TMP_DIR','')
-        if work_dir == '':
-           work_dir = os.environ.get('CK_PROGRAM_TMP_DIR','')
-        if work_dir == '':
-           import tempfile
-           work_dir = tempfile.gettempdir()
-        if work_dir == '':
-           work_dir = '/tmp'
-
-        # Check if load precompiled model
-        compiled_model = os.path.join(work_dir, 'model-tvm.so')
-        if model_path.endswith('.so') or model_path.endswith('.dylib'):
-           compiled_model = model_path
-
-           if not os.path.isfile(compiled_model):
-               print ('')
-               raise Exception("Error: Model file {} not found!".format(compiled_model))
-
-        if os.environ.get('MLPERF_DELETE_COMPILED_MODEL','').strip().lower()=='yes' and \
-           os.path.isfile(compiled_model):
-              os.remove(compiled_model)
-
-        # TODO(@peskov): who specify that?? Only outside? Looks like TVM specific WA
-        # Max batch size should be passed from main function
         self.max_batchsize = max_batchsize
 
-        # Select target (default: cpu)
-        # TBD(@gfursin): need to provide better customization
-        # of a target via external variables that can be passed
-        # from CK workflows
-        if os.environ.get('MLPERF_DEVICE','')=='gpu':
-           ctx = tvm.cuda(0)
+        if model_path.endswith('.so') or model_path.endswith('.dylib'):
+            compiled_model = model_path
+            if not os.path.isfile(compiled_model):
+                print()
+                raise RuntimeError(
+                    f"Error: Model file {compiled_model} not found!"
+                )
         else:
-           ctx = tvm.cpu(0)
+            raise RuntimeError(
+                f"Error: The specified path ({model_path}) does not match path to the compiled model!"
+            )
 
-        # If precompiled model found, load it directly
-        if os.path.isfile(compiled_model):
-           print ('TVM: loading model '+compiled_model)
-           self.lib = tvm.runtime.load_module(compiled_model)
+        print('TVM: loading model ' + compiled_model)
 
+        mod = tvm.runtime.load_module(compiled_model)
+        work_dir = os.path.dirname(model_path)
+
+        if os.path.isfile(os.path.join(work_dir, "vm_exec_code.ro")):
+            self.executable_type = "virtual_machine"
+
+            with open(os.path.join(work_dir, "vm_exec_code.ro"), "rb") as file:
+                vm_bytes = file.read()
+
+            vm_exec = tvm.runtime.vm.Executable.load_exec(vm_bytes, mod)
+
+            for sub_dir in next(os.walk(work_dir))[1]:
+                if sub_dir.endswith("-tvm-tmp"):
+                    path_consts = os.path.join(
+                        work_dir, sub_dir + "/consts")
+                    break
+
+            vm_exec.mod["load_late_bound_consts"](path_consts)
+
+            self.executable = runtime_vm.VirtualMachine(vm_exec, device)
         else:
-           ############################################################################
-           # Import model to TVM
-           from tvm import relay
+            self.executable_type = "graph_executor"
+            self.executable = graph_executor.GraphModule(
+                mod['default'](device))
 
-           input_shapes = os.environ.get('ML_MODEL_INPUT_SHAPES','').strip()
-           if input_shapes == '':
-               print ('')
-               raise Exception("Error: ML_MODEL_INPUT_SHAPES environment variable is not defined!")
+        print(f"WorkerData::init_executable[{os.getpid()}]: {executable}")
 
-           input_shapes = input_shapes.replace('BATCH_SIZE', str(max_batchsize))
+    def inference(self, data: typing.Any) -> typing.Any:
+        """
+        Inference with VirtualMachine / GraphExecutor API
+        """
+        print(f"WorkerData::inference[{os.getpid()}]: {self.executable}")
 
-           print ('TVM model: '+model_path)
+        batch_size = self.max_batchsize
+        for iname, item in data.items():
+            batch_size = len(data)
+            if batch_size < self.max_batchsize:
+                # Fill in with the first tensor
+                item_extra = np.stack(
+                    [item[0]] * (self.max_batchsize - batch_size))
+                item = np.vstack((item, item_extra))
+            elif batch_size > self.max_batchsize:
+                raise ValueError(
+                    "Internal MLPerf error: dynamic batch size > max batch size")
 
-           build_conf = {}
-           params = {}
+            input_idx = self.inputs.index(iname)
+            self.executable.set_input("main", tvm.nd.array(item))
 
-           if model_path.endswith('.pt'):
-              import torch
-              from tvm.relay.build_module import bind_params_by_name
+        self.executable.run()
 
-              shape_list = eval('[' + input_shapes + ']')
-
-              print ('TVM shape list: '+str(shape_list))
-
-              x=os.environ.get('MLPERF_TVM_TORCH_QUANTIZED_ENGINE','')
-              if x!='':
-                 torch.backends.quantized.engine = x
-              pytorch_model = torch.jit.load(model_path)
-              pytorch_model.eval()
-
-              mod, params = relay.frontend.from_pytorch(pytorch_model, shape_list)
-
-              mod["main"] = bind_params_by_name(mod["main"], params)
-
-              # Some optimizations
-              mod = relay.transform.FoldConstant()(mod)
-
-              if os.environ.get('MLPERF_TVM_USE_DNNL','').strip().lower() == 'yes':
-                 from tvm.relay.op.contrib.dnnl import partition_for_dnnl
-                 from tvm.driver.tvmc.common import convert_graph_layout
-
-                 #  move to NHWC layout, prerequisite for DNNL partitioning
-                 mod = convert_graph_layout(mod, "NHWC")
-                 mod = relay.transform.FoldConstant()(mod)
-
-                 mod = partition_for_dnnl(mod)
-
-           elif model_path.endswith('.onnx'):
-              import onnx
-
-              shape_dict = eval('{' + input_shapes + '}')
-
-              print ('TVM shape dict: '+str(shape_dict))
-
-              onnx_model = onnx.load(model_path)
-
-              mod, params = relay.frontend.from_onnx(onnx_model, shape_dict, freeze_params=True)
-
-              # Some optimizations
-              mod = relay.transform.DynamicToStatic()(mod)
-              #mod = relay.transform.FoldExplicitPadding()(mod)
-
-              if os.environ.get('MLPERF_TVM_TRANSFORM_LAYOUT','').strip().lower() == 'yes':
-                 kernel_layout='NHWC'
-
-                 desired_layouts = {
-                     'qnn.conv2d': [kernel_layout, 'default'],
-                     'nn.conv2d': [kernel_layout, 'default'],
-                     'nn.conv2d_transpose': [kernel_layout, 'default'],
-                     'nn.depthwise_conv2d': [kernel_layout, 'default'],
-                     'nn.conv3d': [kernel_layout, 'default'],
-                     'nn.conv3d_transpose': [kernel_layout, 'default'],
-                 }
-
-                 seq = tvm.transform.Sequential([relay.transform.RemoveUnusedFunctions(),
-                                                 relay.transform.FoldConstant(),
-                                                 relay.transform.ConvertLayout(desired_layouts),
-                                                 ])
-
-                 with tvm.transform.PassContext(opt_level=3):
-                     mod = seq(mod)
-
-           elif model_path.endswith('.tflite'):
-              # Grigori used https://tvm.apache.org/docs/tutorials/frontend/deploy_prequantized_tflite.html
-
-              import tflite
-
-              shape_dict = eval('{' + input_shapes + '}')
-
-              print ('TVM shape dict: '+str(shape_dict))
-
-              tflite_model_buf = open(model_path, "rb").read()
-              tflite_model = tflite.Model.GetRootAsModel(tflite_model_buf, 0)
-
-              mod, params = relay.frontend.from_tflite(tflite_model, shape_dict)
-
-           else:
-              print ('')
-              raise Exception("Error: model extension is not supported in TVM backend ({})!".format(model_path))
-
-           # Build model
-           # TBD! Apply autotuning history!
-           opt_lvl = int(os.environ.get('MLPERF_TVM_OPT_LEVEL', 3))
-
-           target = os.environ.get('MLPERF_TVM_TARGET', 'llvm')
-
-           target_host=None
-
-           # New target API
-           tvm_target = tvm.target.Target(target, host=target_host)
-
-           # Check if apply history
-           tvm_history_json_file = os.environ.get('MLPERF_TVM_APPLY_HISTORY','').strip()
-           if tvm_history_json_file!='':
-              if not os.path.isfile(tvm_history_json_file):
-                 print ('')
-                 raise Exception("Error: TVM history file {} not found!".format(tvm_history_json_file))
-
-              build_conf['relay.backend.use_auto_scheduler']=True
-
-              with auto_scheduler.ApplyHistoryBest(tvm_history_json_file):
-                 with tvm.transform.PassContext(opt_level=opt_lvl, config=build_conf):
-                    self.lib=relay.build(mod, target=tvm_target, params=params)
-           else:
-              with tvm.transform.PassContext(opt_level=opt_lvl, config=build_conf):
-                 self.lib=relay.build(mod, target=tvm_target, params=params)
-
-           self.lib.export_library(compiled_model)
-
-           print ('TVM compiled model: '+compiled_model)
-
-        # Init graph
-        self.graph = graph_executor.GraphModule(self.lib['default'](ctx))
-
-        # TODO(@apekov): Check if provided inputs/outputs match with presented in model
-        # TODO(@apekov): Is there function to get names of inputs/outputs? meanwhile fill it with fake names
-        if not inputs:
-            inputs = [str(idx) for idx in range(self.graph.get_num_outputs())]
-        if not outputs:
-            outputs = [str(idx) for idx in range(self.graph.get_num_outputs())]
-
-        # Check executors. Need vm/vm-stateful for SSD object detection models
-        self.executor_type = os.environ.get('MLPERF_TVM_EXECUTOR', 'graph')
-
-        if self.executor_type in ("graph", "debug"):
-            pass
-        elif self.executor_type in ("vm", "vm-stateful"):
-            raise Exception("VM mode is UNSUPPORTED ...")
-
-        self.inputs = inputs
-        self.outputs = outputs
-
-    def predict_impl(self, feed):
-        if self.executor_type in ("vm", "vm-stateful"):
-            raise Exception("VM mode is UNSUPPORTED ...")
-        else:
-            max_batch_size = self.max_batchsize
-            batch_size = max_batch_size
-            for iname, data in feed.items():
-                batch_size = len(data)
-                if batch_size < max_batch_size:
-                    # Fill in with the first tensor
-                    data_extra = np.stack([data[0]] * (max_batch_size-batch_size))
-                    data = np.vstack((data, data_extra))
-                elif batch_size > max_batch_size:
-                    raise ValueError("Internal MLPerf error: dynamic batch size > max batch size")
-
-                input_idx = self.inputs.index(iname)
-                self.graph.set_input(input_idx, tvm.nd.array(data))
-
-            # Run TVM inference
-            self.graph.run()
-
-            # Process TVM outputs
-            tvm_output = []
-            output_order = range(self.graph.get_num_outputs()) if not self.output_order else self.output_order
-            for i in output_order:
-                # Take only the output of batch size for dynamic batches
-                tvm_output.append(self.graph.get_output(i).asnumpy()[:batch_size])
+        tvm_output = []
+        output_order = range(len(self.vm.get_outputs())
+                             ) if not self.output_order else self.output_order
+        for i in output_order:
+            # Take only the output of batch size for dynamic batches
+            tvm_output.append(self.vm.module["get_output"](
+                i).asnumpy()[:batch_size])
 
         return tvm_output
 
-    @staticmethod
-    def _worker_initializer(model_path, inputs, outputs, max_batchsize, omp_envs):
-        BackendTVM.set_omp_envs(omp_envs)
-        global g_graph
-        g_graph = BackendTVM()
-        g_graph.arena_num = 1
-        g_graph.load_impl(model_path, inputs, outputs, max_batchsize)
+
+class PoolBackendTVM(backend.Backend):
+    """
+    Asynchronous launcher based on a pool of workers
+    """
+    pool: multiprocessing.Pool
+    worker_descriptor: WorkerDescriptor = WorkerDescriptor()
+    max_batchsize: int = None
+
+    def __init__(self, num_processes: int = multiprocessing.cpu_count()):
+        self.num_processes: int = num_processes
+
+    def version(self):
+        return tvm.__version__
+
+    def name(self):
+        return "tvm"
 
     @staticmethod
-    def _worker_handler(feed):
-        global g_graph
-        return g_graph.predict(feed)
+    def worker_initializer(model_path: str, inputs=None, outputs=None) -> None:
+        print(
+            f"PoolBackendTVM::worker_initializer[{os.getpid()}]: {model_path}")
+        PoolBackendTVM.worker_descriptor.init_executable(
+            model_path, self.max_batchsize, inputs, outputs)
 
-    def load(self, model_path, inputs=None, outputs=None):
-        """Load model and find input/outputs from the model file."""
-        self.load_impl(model_path, inputs, outputs, self.max_batchsize)
+    def worker_handler(self, feed: typing.Any) -> typing.Any:
+        print(
+            f"PoolBackendTVM::worker_handler[{os.getpid()}][{self.worker_descriptor.executable}]: {feed}")
+        return self.worker_descriptor.inference(feed)
 
-        if self.arena_num > 1:
-            self.pool = multiprocessing.Pool(self.arena_num,
-                                             initializer=self._worker_initializer,
-                                             initargs=(model_path, inputs, outputs, self.max_batchsize,
-                                                       self.create_omp_args(0))
-                                             )
+    def load(self, model_path: str, inputs=None, outputs=None) -> PoolBackendTVM:
+        print(f"PoolBackendTVM::load[{os.getpid()}]: {model_path}")
 
-        # TODO(@apeskov): do we really have to return self ??
+        PoolBackendTVM.pool = multiprocessing.Pool(
+            self.num_processes,
+            initializer=PoolBackendTVM.worker_initializer,
+            initargs=(model_path, inputs, outputs)
+        )
         return self
 
-    def predict(self, feed):
-        """Run the prediction."""
-        if self.arena_num > 1:
-            resp = self.pool.apply_async(self._worker_handler, args=(feed,))
-            return resp.get()
+    def predict(
+            self, feed: typing.Any, async_mode: bool = True
+    ) -> typing.Union[typing.Any, multiprocessing.pool.ApplyResult]:
+        print(f"PoolBackendTVM::predict[{os.getpid()}]: {feed}")
+        if async_mode:
+            return self.predict_async(feed)
         else:
-            return self.predict_impl(feed)
+            return self.predict_sync(feed)
+
+    def predict_sync(self, feed: typing.Any) -> typing.Any:
+        print(f"PoolBackendTVM::predict_sync[{os.getpid()}]: {feed}")
+        return self.pool.apply_async(self.worker_handler, args=(feed,)).get()
+
+    def predict_async(self, feed: typing.Any) -> multiprocessing.pool.ApplyResult:
+        print(f"PoolBackendTVM::predict_async[{os.getpid()}]: {feed}")
+        resp: multiprocessing.pool.ApplyResult = self.pool.apply_async(
+            self.worker_handler, args=(feed,))
+        return resp
+
+    @staticmethod
+    def async_response(async_responses: typing.List[multiprocessing.pool.ApplyResult]) -> typing.List[typing.Any]:
+        return [resp.get() for resp in async_responses]
+
+    def finish(self) -> None:
+        self.pool.terminate()
+
+
+class AsyncBackendTVM(backend.Backend):
+    """
+    Asynchronous launcher based on processes and a concurrent task queue
+    """
+    concurrent_queue: multiprocessing.Queue = multiprocessing.Queue(
+        utils.QUEUE_SIZE)
+    manager: multiprocessing.Manager = multiprocessing.Manager()
+    response_map: typing.Dict = manager.dict()
+    max_batchsize: int = None
+
+    def __init__(self, num_processes: int = multiprocessing.cpu_count()):
+        print(f"AsyncBackendTVM::__init__[{os.getpid()}]")
+        self.num_processes: int = num_processes
+        self.workers: typing.List[multiprocessing.Process] = []
+
+    @staticmethod
+    def _async_inference(samples: typing.Any, descriptor: WorkerDescriptor):
+        print(f"AsyncBackendTVM::_async_inference[{os.getpid()}]: {samples}")
+        return descriptor.inference(samples)
+
+    @staticmethod
+    def _async_response(descriptor: WorkerDescriptor) -> bool:
+        print(
+            f"AsyncBackendTVM::_async_response[{os.getpid()}]: {descriptor.executable}")
+        sample_id, samples = AsyncBackendTVM.concurrent_queue.get(block=True)
+        if samples == -1:   # End marker
+            return False
+        inference_response = AsyncBackendTVM._async_inference(
+            samples, descriptor)
+        AsyncBackendTVM.response_map[sample_id] = inference_response
+        return True
+
+    @staticmethod
+    def _worker_action(descriptor: WorkerDescriptor):
+        print(
+            f"AsyncBackendTVM::_worker_action[{os.getpid()}]: {descriptor.executable}")
+        while AsyncBackendTVM._async_response(descriptor):
+            # Empty body
+            pass
+
+    @staticmethod
+    def _create_worker(descriptor: WorkerDescriptor) -> multiprocessing.Process:
+        print(
+            f"AsyncBackendTVM::_create_worker[{os.getpid()}]: {descriptor.executable}")
+        return multiprocessing.Process(
+            target=AsyncBackendTVM._worker_action,
+            args=(descriptor, )
+        )
+
+    def load(self, model_path: str, inputs=None, outputs=None) -> PoolBackendTVM:
+        print(f"AsyncBackendTVM::load[{os.getpid()}]: ", model_path)
+        for i in range(self.num_processes):
+            worker_descriptor = WorkerDescriptor()
+            worker_descriptor.init_executable(
+                model_path, self.max_batchsize, inputs, outputs)
+            self.workers.append(
+                AsyncBackendTVM._create_worker(worker_descriptor))
+
+        for worker in self.workers:
+            worker.start()
+
+        return self
+
+    def predict(self, data: typing.Any) -> None:
+        print(f"AsyncBackendTVM::predict[{os.getpid()}]: {data}")
+        # Async predict, no response now
+        data_id = data
+        AsyncBackendTVM.concurrent_queue.put((data_id, data), block=True)
+
+    def finish(self) -> None:
+        print(f"AsyncBackendTVM::finish[{os.getpid()}]")
+        for worker in self.workers:
+            worker.join()
+
+    def async_response(self) -> typing.List[typing.Any]:
+        print(f"AsyncBackendTVM::async_response[{os.getpid()}]")
+        result: typing.List[typing.Any] = [None] * len(self.response_map)
+        for key, value in self.response_map.items():
+            result[key] = value
+        return result
